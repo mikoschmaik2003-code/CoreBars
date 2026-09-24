@@ -1,0 +1,15 @@
+CoreBars 1.9.7 — Apple Silicon, macOS 13 oder neuer
+
+1. Falls CoreBars bereits läuft, im Menüleisten-Popup „CoreBars beenden“ wählen.
+2. CoreBars.app aus diesem Fenster in „Programme“ ziehen und die alte Version ersetzen.
+3. CoreBars aus „Programme“ starten.
+
+Die App ist ad hoc signiert und nicht von Apple beglaubigt. macOS kann den
+ersten Start blockieren. Wenn du der Quelle vertraust, versuche die App
+zu öffnen und gehe dann zu Systemeinstellungen > Datenschutz & Sicherheit >
+Dennoch öffnen. Weitere Hinweise: https://support.apple.com/de-de/102445
+
+Beim ersten Start aktiviert CoreBars den Autostart. Im Popup lässt sich
+das wieder abschalten.
+
+Erstellt mit Unterstützung von KI. Keine Sicherheitsgarantie.

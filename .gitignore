@@ -1,0 +1,6 @@
+.build/
+dist/
+Distribution/
+.DS_Store
+ReleaseStaging/
+CoreBars-*.dmg
