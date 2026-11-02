@@ -1134,8 +1134,10 @@ static NSDictionary *CBTextAttributes(NSFont *preferredFont, CGFloat fallbackSiz
             previousType = type;
         }
         double load = number.doubleValue;
-        NSColor *color = load < .55 ? NSColor.systemGreenColor :
-                         load < .82 ? NSColor.systemOrangeColor : NSColor.systemRedColor;
+        NSColor *color = [type isEqualToString:@"P"] || [type isEqualToString:@"S"]
+            ? NSColor.systemPurpleColor : [type isEqualToString:@"E"]
+            ? NSColor.systemGreenColor : (load < .55 ? NSColor.systemGreenColor :
+                         load < .82 ? NSColor.systemOrangeColor : NSColor.systemRedColor);
         [self drawBarAtX:x width:3 height:height load:load color:color];
         x += 4;
     }
@@ -1177,6 +1179,109 @@ static NSDictionary *CBTextAttributes(NSFont *preferredFont, CGFloat fallbackSiz
 }
 @end
 
+@interface CBHorizontalBarsView : NSView
+@property(nonatomic) CBSnapshot *snapshot;
+- (CGFloat)requiredHeight;
+@end
+
+@implementation CBHorizontalBarsView
+- (BOOL)isFlipped { return YES; }
+- (BOOL)shows:(NSString *)key {
+    NSUserDefaults *defaults = NSUserDefaults.standardUserDefaults;
+    return ![defaults objectForKey:key] || [defaults boolForKey:key];
+}
+- (CGFloat)requiredHeight {
+    NSUInteger rows = ([self shows:@"CBShowGPU"] ? 1 : 0) + ([self shows:@"CBShowRAM"] ? 1 : 0);
+    if ([self shows:@"CBShowCPU"]) rows += 1 + (self.snapshot.coreLoads.count + 1) / 2;
+    if ([self shows:@"CBShowExternal"]) rows += MAX((NSUInteger)1, self.snapshot.externalDrives.count);
+    return MAX(1, 8 + rows * 25);
+}
+- (void)setSnapshot:(CBSnapshot *)snapshot {
+    _snapshot = snapshot;
+    self.needsDisplay = YES;
+}
+- (void)drawRect:(NSRect)dirtyRect {
+    [super drawRect:dirtyRect];
+    if (!self.snapshot) return;
+    CGFloat y = 5;
+    CGFloat width = NSWidth(self.bounds);
+    if ([self shows:@"CBShowGPU"]) {
+        [self drawBar:@"GPU" value:self.snapshot.gpuLoad color:NSColor.systemPurpleColor x:0 y:y width:width];
+        y += 25;
+    }
+    if ([self shows:@"CBShowCPU"]) {
+        [self drawBar:@"CPU" value:self.snapshot.totalCPULoad color:nil x:0 y:y width:width];
+        y += 25;
+        CGFloat half = (width - 12) / 2;
+        for (NSUInteger i = 0; i < self.snapshot.coreLoads.count; i++) {
+            NSString *type = i < self.snapshot.coreTypes.count ? self.snapshot.coreTypes[i] : @"?";
+            NSString *name = [NSString stringWithFormat:@"%@%lu", type, (unsigned long)i + 1];
+            NSColor *coreColor = [type isEqualToString:@"P"] || [type isEqualToString:@"S"]
+                ? NSColor.systemPurpleColor : [type isEqualToString:@"E"] ? NSColor.systemGreenColor : nil;
+            [self drawBar:name value:self.snapshot.coreLoads[i].doubleValue color:coreColor x:(i % 2) * (half + 12) y:y width:half];
+            if (i % 2 == 1 || i + 1 == self.snapshot.coreLoads.count) y += 25;
+        }
+    }
+    if ([self shows:@"CBShowRAM"]) {
+        [self drawBar:@"RAM" value:self.snapshot.memoryLoad color:NSColor.systemBlueColor x:0 y:y width:width];
+        y += 25;
+    }
+    if ([self shows:@"CBShowExternal"]) {
+        if (self.snapshot.externalDrives.count == 0) {
+            [@"Extern: kein Laufwerk" drawAtPoint:NSMakePoint(0, y) withAttributes:@{NSFontAttributeName: [NSFont systemFontOfSize:11], NSForegroundColorAttributeName:NSColor.secondaryLabelColor}];
+        }
+        for (CBExternalDrive *drive in self.snapshot.externalDrives) {
+            NSString *name = drive.name.length > 12 ? [[drive.name substringToIndex:11] stringByAppendingString:@"…"] : drive.name;
+            NSString *free = [NSString stringWithFormat:@"%@ frei", CBShortByteText(drive.freeBytes)];
+            [self drawBar:name value:drive.totalBytes ? drive.usedLoad : NAN color:NSColor.systemBlueColor x:0 y:y width:width suffix:free];
+            y += 25;
+        }
+    }
+}
+- (void)drawBar:(NSString *)name value:(double)value color:(NSColor *)color x:(CGFloat)x y:(CGFloat)y width:(CGFloat)width {
+    [self drawBar:name value:value color:color x:x y:y width:width suffix:nil];
+}
+- (void)drawBar:(NSString *)name value:(double)value color:(NSColor *)color x:(CGFloat)x y:(CGFloat)y width:(CGFloat)width suffix:(NSString *)suffix {
+    BOOL available = isfinite(value);
+    value = available ? CBClamp(value, 0, 1) : 0;
+    if (!color) color = value < .55 ? NSColor.systemGreenColor : value < .82 ? NSColor.systemOrangeColor : NSColor.systemRedColor;
+    NSDictionary *style = @{NSFontAttributeName: [NSFont monospacedDigitSystemFontOfSize:10 weight:NSFontWeightMedium], NSForegroundColorAttributeName: NSColor.labelColor};
+    NSString *text = suffix ?: (available ? [NSString stringWithFormat:@"%.0f %%", value * 100] : @"–");
+    NSSize labelSize = [name sizeWithAttributes:style];
+    NSSize textSize = [text sizeWithAttributes:style];
+    [name drawAtPoint:NSMakePoint(x, y) withAttributes:style];
+    [text drawAtPoint:NSMakePoint(x + width - textSize.width, y) withAttributes:style];
+    CGFloat left = MIN(width - textSize.width - 8, labelSize.width + 8);
+    NSRect track = NSMakeRect(x + left, y + 4, MAX(1, width - left - textSize.width - 8), 7);
+    [[NSColor.labelColor colorWithAlphaComponent:.14] setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:track xRadius:3 yRadius:3] fill];
+    if (value > 0) {
+        track.size.width *= value;
+        [color setFill];
+        [[NSBezierPath bezierPathWithRoundedRect:track xRadius:3 yRadius:3] fill];
+    }
+}
+@end
+
+@interface CBPopoverBackgroundView : NSView
+@end
+
+@implementation CBPopoverBackgroundView
+- (void)drawRect:(NSRect)dirtyRect {
+    [[NSColor colorWithCalibratedWhite:0.055 alpha:1.0] setFill];
+    NSRectFill(self.bounds);
+    NSString *path = [NSBundle.mainBundle pathForResource:@"mikuch-pattern" ofType:@"png" inDirectory:@"Assets"];
+    NSImage *pattern = path ? [[NSImage alloc] initWithContentsOfFile:path] : nil;
+    if (!pattern || pattern.size.width <= 0 || pattern.size.height <= 0) return;
+    CGFloat scale = MAX(NSWidth(self.bounds) / pattern.size.width, NSHeight(self.bounds) / pattern.size.height);
+    NSSize size = NSMakeSize(pattern.size.width * scale, pattern.size.height * scale);
+    NSRect destination = NSMakeRect((NSWidth(self.bounds) - size.width) / 2,
+                                    (NSHeight(self.bounds) - size.height) / 2,
+                                    size.width, size.height);
+    [pattern drawInRect:destination fromRect:NSZeroRect operation:NSCompositingOperationSourceOver fraction:0.22];
+}
+@end
+
 @interface CBPopoverController : NSViewController
 - (void)updateWithSnapshot:(CBSnapshot *)snapshot;
 @end
@@ -1206,10 +1311,13 @@ static NSDictionary *CBTextAttributes(NSFont *preferredFont, CGFloat fallbackSiz
     NSTextField *_coresLabel;
     NSButton *_loginCheckbox;
     NSTextField *_errorLabel;
+    CBHorizontalBarsView *_horizontalBars;
+    NSLayoutConstraint *_horizontalHeight;
 }
 
 - (void)loadView {
-    NSView *container = [NSView new];
+    NSView *container = [CBPopoverBackgroundView new];
+    container.appearance = [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua];
     _gpuLabel = [NSTextField labelWithString:@"GPU"];
     _cpuLabel = [NSTextField labelWithString:@"CPU"];
     _superLabel = [NSTextField labelWithString:@"CPU S"];
@@ -1260,6 +1368,25 @@ static NSDictionary *CBTextAttributes(NSFont *preferredFont, CGFloat fallbackSiz
     NSTextField *title = [NSTextField labelWithString:@"CoreBars"];
     title.font = [NSFont boldSystemFontOfSize:15];
 
+    NSTextField *barsTitle = [NSTextField labelWithString:@"Auslastung · horizontale Balken"];
+    barsTitle.font = [NSFont systemFontOfSize:11 weight:NSFontWeightSemibold];
+    barsTitle.textColor = NSColor.secondaryLabelColor;
+    NSMutableArray<NSView *> *options = [NSMutableArray array];
+    NSArray *titles = @[@"GPU", @"CPU", @"RAM", @"Extern"];
+    NSArray *keys = @[@"CBShowGPU", @"CBShowCPU", @"CBShowRAM", @"CBShowExternal"];
+    for (NSUInteger i = 0; i < keys.count; i++) {
+        NSButton *checkbox = [NSButton checkboxWithTitle:titles[i] target:self action:@selector(toggleHorizontalBar:)];
+        checkbox.identifier = keys[i];
+        checkbox.state = ![NSUserDefaults.standardUserDefaults objectForKey:keys[i]] ||
+            [NSUserDefaults.standardUserDefaults boolForKey:keys[i]] ? NSControlStateValueOn : NSControlStateValueOff;
+        [options addObject:checkbox];
+    }
+    NSStackView *barOptions = [NSStackView stackViewWithViews:options];
+    barOptions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    barOptions.spacing = 8;
+    _horizontalBars = [CBHorizontalBarsView new];
+    _horizontalBars.translatesAutoresizingMaskIntoConstraints = NO;
+
     _loginCheckbox = [NSButton checkboxWithTitle:@"Beim Anmelden starten"
                                           target:self
                                           action:@selector(toggleLaunchAtLogin:)];
@@ -1286,12 +1413,15 @@ static NSDictionary *CBTextAttributes(NSFont *preferredFont, CGFloat fallbackSiz
                                         target:self
                                         action:@selector(quit:)];
     quit.bezelStyle = NSBezelStyleRounded;
+    NSButton *cleanCache = [NSButton buttonWithTitle:@"App-Caches aufräumen …"
+                                              target:self
+                                              action:@selector(cleanCache:)];
+    cleanCache.bezelStyle = NSBezelStyleRounded;
 
     NSStackView *stack = [NSStackView stackViewWithViews:@[
-        title, _gpuLabel, _cpuLabel, _cpuAlertRow, _superLabel, _performanceLabel, _efficiencyLabel, _coreLegendLabel,
-        _externalDriveLabel, _performanceHeadroomLabel, _frequencyLabel, _chargingLabel, _batteryDrainLabel, _temperatureLabel, _memoryLabel, memoryPressureRow, _swapLabel,
-        _coresLabel, _appMemoryLabel, _appCPULabel,
-        separator, _loginCheckbox, _errorLabel, quit
+        title, barsTitle, barOptions, _horizontalBars, _cpuAlertRow,
+        _performanceHeadroomLabel, _frequencyLabel, _chargingLabel, _batteryDrainLabel, _temperatureLabel, memoryPressureRow, _swapLabel,
+        separator, cleanCache, _loginCheckbox, _errorLabel, quit
     ]];
     stack.orientation = NSUserInterfaceLayoutOrientationVertical;
     stack.alignment = NSLayoutAttributeLeading;
@@ -1299,6 +1429,7 @@ static NSDictionary *CBTextAttributes(NSFont *preferredFont, CGFloat fallbackSiz
     stack.translatesAutoresizingMaskIntoConstraints = NO;
     [container addSubview:stack];
 
+    _horizontalHeight = [_horizontalBars.heightAnchor constraintEqualToConstant:1];
     [NSLayoutConstraint activateConstraints:@[
         [container.widthAnchor constraintEqualToConstant:320],
         [stack.leadingAnchor constraintEqualToAnchor:container.leadingAnchor constant:16],
@@ -1310,6 +1441,9 @@ static NSDictionary *CBTextAttributes(NSFont *preferredFont, CGFloat fallbackSiz
         [_cpuAlertIcon.widthAnchor constraintEqualToConstant:16],
         [_cpuAlertIcon.heightAnchor constraintEqualToConstant:16],
         [separator.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
+        [_horizontalBars.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
+        _horizontalHeight,
+        [cleanCache.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
         [quit.widthAnchor constraintEqualToAnchor:stack.widthAnchor]
     ]];
     self.view = container;
@@ -1327,6 +1461,8 @@ static NSDictionary *CBTextAttributes(NSFont *preferredFont, CGFloat fallbackSiz
 
 - (void)updateWithSnapshot:(CBSnapshot *)snapshot {
     if (!self.isViewLoaded) return;
+    _horizontalBars.snapshot = snapshot;
+    _horizontalHeight.constant = _horizontalBars.requiredHeight;
     _gpuLabel.stringValue = isfinite(snapshot.gpuLoad)
         ? [NSString stringWithFormat:@"GPU:         %.0f %%", snapshot.gpuLoad * 100]
         : @"GPU:         wird gemessen …";
@@ -1492,6 +1628,120 @@ static NSDictionary *CBTextAttributes(NSFont *preferredFont, CGFloat fallbackSiz
         sender.state = CBLoginItemManager.enabled ? NSControlStateValueOn : NSControlStateValueOff;
     }
 }
+- (void)toggleHorizontalBar:(NSButton *)sender {
+    if (!sender.identifier) return;
+    [NSUserDefaults.standardUserDefaults setBool:sender.state == NSControlStateValueOn forKey:sender.identifier];
+    _horizontalHeight.constant = _horizontalBars.requiredHeight;
+    _horizontalBars.needsDisplay = YES;
+}
+
+- (void)cleanCache:(id)sender {
+    NSURL *cacheRoot = [[NSFileManager defaultManager] URLsForDirectory:NSCachesDirectory
+                                                             inDomains:NSUserDomainMask].firstObject.URLByStandardizingPath;
+    if (!cacheRoot) return;
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.title = @"App-Cache auswählen";
+    panel.message = @"Wähle einen App-Ordner direkt in Library/Caches. Schließe die zugehörige App vorher. System-Caches werden nicht bereinigt.";
+    panel.directoryURL = cacheRoot;
+    panel.canChooseFiles = NO;
+    panel.canChooseDirectories = YES;
+    panel.allowsMultipleSelection = NO;
+    panel.prompt = @"Vorschau";
+    if ([panel runModal] != NSModalResponseOK) return;
+
+    NSURL *selected = panel.URL.URLByStandardizingPath;
+    NSString *name = selected.lastPathComponent;
+    NSNumber *isDirectory = nil;
+    NSNumber *isSymlink = nil;
+    NSError *readError = nil;
+    BOOL valid = [selected.URLByDeletingLastPathComponent.path isEqualToString:cacheRoot.path] &&
+        name.length > 0 && ![name.lowercaseString hasPrefix:@"com.apple."] &&
+        [selected getResourceValue:&isDirectory forKey:NSURLIsDirectoryKey error:&readError] &&
+        [selected getResourceValue:&isSymlink forKey:NSURLIsSymbolicLinkKey error:&readError] &&
+        isDirectory.boolValue && !isSymlink.boolValue;
+    if (!valid) {
+        NSAlert *alert = [NSAlert new];
+        alert.messageText = @"Dieser Ordner kann nicht bereinigt werden";
+        alert.informativeText = @"Bitte wähle einen normalen App-Ordner direkt in deinem Benutzer-Cache. Apple-System-Caches und Verknüpfungen sind ausgeschlossen.";
+        [alert runModal];
+        return;
+    }
+
+    // Do not block the menu bar while a potentially large cache is measured.
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        __block BOOL incomplete = NO;
+        unsigned long long bytes = 0;
+        NSDirectoryEnumerator<NSURL *> *enumerator = [[NSFileManager defaultManager]
+            enumeratorAtURL:selected
+            includingPropertiesForKeys:@[NSURLIsRegularFileKey, NSURLIsSymbolicLinkKey, NSURLTotalFileAllocatedSizeKey, NSURLFileAllocatedSizeKey]
+            options:0
+            errorHandler:^BOOL(NSURL *url, NSError *error) { incomplete = YES; return YES; }];
+        if (!enumerator) incomplete = YES;
+        for (NSURL *url in enumerator) {
+            NSNumber *symlink = nil, *regular = nil, *allocated = nil;
+            NSError *error = nil;
+            if (![url getResourceValue:&symlink forKey:NSURLIsSymbolicLinkKey error:&error] ||
+                ![url getResourceValue:&regular forKey:NSURLIsRegularFileKey error:&error]) {
+                incomplete = YES;
+                continue;
+            }
+            if (symlink.boolValue || !regular.boolValue) continue;
+            if (![url getResourceValue:&allocated forKey:NSURLTotalFileAllocatedSizeKey error:nil] || !allocated) {
+                [url getResourceValue:&allocated forKey:NSURLFileAllocatedSizeKey error:nil];
+            }
+            if (allocated) bytes += allocated.unsignedLongLongValue;
+            else incomplete = YES;
+        }
+        NSString *size = [NSByteCountFormatter stringFromByteCount:(long long)bytes countStyle:NSByteCountFormatterCountStyleFile];
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [self confirmCache:selected size:size incomplete:incomplete];
+        });
+    });
+}
+
+- (void)confirmCache:(NSURL *)selected size:(NSString *)size incomplete:(BOOL)incomplete {
+    NSString *name = selected.lastPathComponent;
+    NSError *readError = nil;
+    NSAlert *confirm = [NSAlert new];
+    confirm.messageText = [NSString stringWithFormat:@"Cache „%@“ aufräumen?", name];
+    confirm.informativeText = [NSString stringWithFormat:@"%@\nGeschätzte Größe: %@%@\n\nDer Ordner wird in den Papierkorb verschoben. Speicher wird erst nach dem Leeren frei; der tatsächliche Gewinn kann abweichen. Apps können Caches neu erstellen; Einstellungen oder Offline-Daten können verloren gehen. Schließe die betreffende App vorher.", selected.path, incomplete ? @"mindestens " : @"", size];
+    [confirm addButtonWithTitle:@"In den Papierkorb"];
+    [confirm addButtonWithTitle:@"Abbrechen"];
+    confirm.informativeText = [confirm.informativeText stringByAppendingString:@"\n\nAlternativ kannst du den Cache direkt endgültig löschen."];
+    [confirm addButtonWithTitle:@"Endgültig löschen …"];
+    NSModalResponse choice = [confirm runModal];
+    if (choice != NSAlertFirstButtonReturn && choice != NSAlertThirdButtonReturn) return;
+    BOOL permanently = choice == NSAlertThirdButtonReturn;
+    if (permanently) {
+        NSAlert *warning = [NSAlert new];
+        warning.alertStyle = NSAlertStyleWarning;
+        warning.messageText = @"Cache endgültig löschen?";
+        warning.informativeText = [NSString stringWithFormat:@"%@\n\nDieser Ordner wird sofort und ohne Papierkorb gelöscht und kann normalerweise nicht wiederhergestellt werden.", selected.path];
+        [warning addButtonWithTitle:@"Abbrechen"];
+        [warning addButtonWithTitle:@"Endgültig löschen"];
+        if ([warning runModal] != NSAlertSecondButtonReturn) return;
+    }
+
+    // Revalidate immediately before the move, without following symbolic links.
+    NSNumber *currentSymlink = nil;
+    NSNumber *currentDirectory = nil;
+    [selected removeAllCachedResourceValues];
+    if (![selected getResourceValue:&currentSymlink forKey:NSURLIsSymbolicLinkKey error:&readError] ||
+        ![selected getResourceValue:&currentDirectory forKey:NSURLIsDirectoryKey error:&readError] ||
+        currentSymlink.boolValue || !currentDirectory.boolValue) {
+        NSBeep();
+        return;
+    }
+    NSError *error = nil;
+    NSURL *result = nil;
+    BOOL moved = permanently
+        ? [[NSFileManager defaultManager] removeItemAtURL:selected error:&error]
+        : [[NSFileManager defaultManager] trashItemAtURL:selected resultingItemURL:&result error:&error];
+    NSAlert *resultAlert = [NSAlert new];
+    resultAlert.messageText = moved ? (permanently ? @"Cache gelöscht" : @"Cache im Papierkorb") : @"Cache konnte nicht vollständig entfernt werden";
+    resultAlert.informativeText = moved ? (permanently ? @"Der Cache wurde endgültig gelöscht. Der tatsächlich freigegebene Speicher kann von der Schätzung abweichen." : @"Du kannst den Ordner im Papierkorb wiederherstellen. Speicherplatz wird erst beim Leeren frei.") : [NSString stringWithFormat:@"%@\n\nEinige Dateien könnten bereits entfernt worden sein.", error.localizedDescription ?: @"Unbekannter Fehler."];
+    [resultAlert runModal];
+}
 - (void)quit:(id)sender { [NSApp terminate:nil]; }
 @end
 
@@ -1510,7 +1760,7 @@ static NSDictionary *CBTextAttributes(NSFont *preferredFont, CGFloat fallbackSiz
 
 - (void)applicationDidFinishLaunching:(NSNotification *)notification {
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
-    if (!CBLoginItemManager.enabled) {
+    if (![NSProcessInfo.processInfo.arguments containsObject:@"--mikuch-managed"] && !CBLoginItemManager.enabled) {
         NSError *loginError = nil;
         [CBLoginItemManager setEnabled:YES error:&loginError];
         if (loginError) {
